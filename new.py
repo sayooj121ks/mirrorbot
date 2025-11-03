@@ -3,27 +3,47 @@ import telebot
 from pymongo import MongoClient
 from flask import Flask
 import threading
+import time
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Initialize Flask app for health checks
 app = Flask(__name__)
 
 @app.route('/')
-def health_check():
-    return " Telegram Mirror Bot is running!", 200
+def home():
+    return "🤖 Telegram Mirror Bot is running!", 200
 
 @app.route('/health')
 def health():
-    return {"status": "healthy", "channels_count": len(channels)}, 200
+    return {
+        "status": "healthy", 
+        "service": "telegram-mirror-bot",
+        "channels_count": len(channels)
+    }, 200
+
+@app.route('/ping')
+def ping():
+    return "pong", 200
 
 # Get environment variables
-MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://sayoojsayoojks72_db_user:MXhCHQUIZeZk9aEH@cluster0.qocoeg0.mongodb.net/?appName=Cluster0")
-TOKEN = os.getenv("BOT_TOKEN", "8406369208:AAG5LVhuDoVKVSutRwaUwsVFiBcFK805kmQ")
+MONGO_URI = os.getenv("MONGO_URI")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-if not TOKEN:
+if not BOT_TOKEN:
+    logger.error("❌ BOT_TOKEN environment variable is missing!")
     raise ValueError("BOT_TOKEN environment variable is required")
+
+if not MONGO_URI:
+    logger.error("❌ MONGO_URI environment variable is missing!")
+    raise ValueError("MONGO_URI environment variable is required")
 
 # Initialize MongoDB
 try:
+    logger.info("🔗 Connecting to MongoDB...")
     mongo_client = MongoClient(MONGO_URI)
     DB_NAME = "mirror_bot"
     COLLECTION_NAME = "channels"
@@ -32,34 +52,41 @@ try:
     
     # Test connection
     mongo_client.admin.command('ping')
-    print(" Connected to MongoDB successfully")
+    logger.info("✅ Connected to MongoDB successfully")
 except Exception as e:
-    print(f"❌ MongoDB connection failed: {e}")
+    logger.error(f"❌ MongoDB connection failed: {e}")
     raise
 
 # Load channels from MongoDB
-channels = [doc["chat_id"] for doc in collection.find()]
-print(f"Loaded {len(channels)} channels from MongoDB.")
+try:
+    channels = [doc["chat_id"] for doc in collection.find()]
+    logger.info(f"✅ Loaded {len(channels)} channels from MongoDB.")
+except Exception as e:
+    logger.error(f"❌ Failed to load channels: {e}")
+    channels = []
 
 # Initialize bot
-bot = telebot.TeleBot(TOKEN)
+bot = telebot.TeleBot(BOT_TOKEN)
 
 # ───────────────────────────────
 # Command: /add → Add this channel
 # ───────────────────────────────
 @bot.channel_post_handler(commands=['add'])
 def add_channel(message):
-    chat_id = message.chat.id
-    if chat_id not in channels:
-        channels.append(chat_id)
-        collection.insert_one({"chat_id": chat_id})
-        bot.send_message(chat_id, f"✅ Channel added and saved!\nTotal channels: {len(channels)}")
-        print(f"➕ Added channel: {chat_id}")
-    else:
-        bot.send_message(chat_id, "ℹ️ Channel already added.")
+    try:
+        chat_id = message.chat.id
+        if chat_id not in channels:
+            channels.append(chat_id)
+            collection.insert_one({"chat_id": chat_id})
+            bot.send_message(chat_id, f"✅ Channel added and saved!\nTotal channels: {len(channels)}")
+            logger.info(f"➕ Added channel: {chat_id}")
+        else:
+            bot.send_message(chat_id, "ℹ️ Channel already added.")
+    except Exception as e:
+        logger.error(f"❌ Error in add_channel: {e}")
 
 # ───────────────────────────────
-# Function: Send message manually to target
+# Function: Send message to target channel
 # ───────────────────────────────
 def send_to_channel(target_chat, message):
     try:
@@ -72,128 +99,114 @@ def send_to_channel(target_chat, message):
             bot.send_message(target_chat, message.text, entities=entities)
 
         elif ctype == 'photo':
-            file_id = message.photo[-1].file_id if message.photo else None
-            if file_id:
-                bot.send_photo(target_chat, file_id, caption=caption, caption_entities=caption_entities)
-            else:
-                bot.send_message(target_chat, caption or "(Photo missing)")
+            file_id = message.photo[-1].file_id
+            bot.send_photo(target_chat, file_id, caption=caption, caption_entities=caption_entities)
 
         elif ctype == 'video':
-            if hasattr(message, 'video') and message.video:
-                bot.send_video(target_chat, message.video.file_id, caption=caption, caption_entities=caption_entities)
-            else:
-                bot.send_message(target_chat, caption or "(Video content missing)")
+            bot.send_video(target_chat, message.video.file_id, caption=caption, caption_entities=caption_entities)
 
         elif ctype == 'document':
-            if hasattr(message, 'document') and message.document:
-                bot.send_document(target_chat, message.document.file_id, caption=caption, caption_entities=caption_entities)
-            else:
-                bot.send_message(target_chat, caption or "(Document missing)")
+            bot.send_document(target_chat, message.document.file_id, caption=caption, caption_entities=caption_entities)
 
         elif ctype == 'audio':
-            if hasattr(message, 'audio') and message.audio:
-                bot.send_audio(target_chat, message.audio.file_id, caption=caption, caption_entities=caption_entities)
-            else:
-                bot.send_message(target_chat, caption or "(Audio missing)")
+            bot.send_audio(target_chat, message.audio.file_id, caption=caption, caption_entities=caption_entities)
 
         elif ctype == 'voice':
-            if hasattr(message, 'voice') and message.voice:
-                bot.send_voice(target_chat, message.voice.file_id, caption=caption)
-            else:
-                bot.send_message(target_chat, caption or "(Voice message missing)")
+            bot.send_voice(target_chat, message.voice.file_id, caption=caption)
 
         elif ctype == 'animation':
-            if hasattr(message, 'animation') and message.animation:
-                bot.send_animation(target_chat, message.animation.file_id, caption=caption, caption_entities=caption_entities)
-            else:
-                bot.send_message(target_chat, caption or "(Animation missing)")
+            bot.send_animation(target_chat, message.animation.file_id, caption=caption, caption_entities=caption_entities)
 
         elif ctype == 'sticker':
-            if hasattr(message, 'sticker') and message.sticker:
-                bot.send_sticker(target_chat, message.sticker.file_id)
-            else:
-                bot.send_message(target_chat, "(Sticker missing)")
+            bot.send_sticker(target_chat, message.sticker.file_id)
 
         elif ctype == 'video_note':
-            if hasattr(message, 'video_note') and message.video_note:
-                bot.send_video_note(target_chat, message.video_note.file_id)
-            else:
-                bot.send_message(target_chat, "(Video note missing)")
+            bot.send_video_note(target_chat, message.video_note.file_id)
 
         elif ctype == 'poll':
-            if hasattr(message, 'poll') and message.poll:
-                question = message.poll.question
-                options = [opt.text for opt in message.poll.options]
-                bot.send_poll(target_chat, question, options)
-            else:
-                bot.send_message(target_chat, "(Poll content missing)")
+            question = message.poll.question
+            options = [opt.text for opt in message.poll.options]
+            bot.send_poll(target_chat, question, options)
 
         elif ctype == 'location':
-            if hasattr(message, 'location') and message.location:
-                bot.send_location(target_chat, message.location.latitude, message.location.longitude)
-            else:
-                bot.send_message(target_chat, "(Location data missing)")
+            bot.send_location(target_chat, message.location.latitude, message.location.longitude)
 
         elif ctype == 'contact':
-            if hasattr(message, 'contact') and message.contact:
-                bot.send_contact(target_chat, message.contact.phone_number, message.contact.first_name)
-            else:
-                bot.send_message(target_chat, "(Contact data missing)")
+            bot.send_contact(target_chat, message.contact.phone_number, message.contact.first_name)
 
         else:
-            print(f"❓ Unsupported type: {ctype}")
+            logger.warning(f"⚠️ Unsupported message type: {ctype}")
             if hasattr(message, 'text') and message.text:
                 bot.send_message(target_chat, f"[{ctype}] {message.text}")
-            else:
-                bot.send_message(target_chat, f"Unsupported message type: {ctype}")
 
     except Exception as e:
-        print(f"❌ Failed to send {ctype} to {target_chat}: {e}")
-        try:
-            bot.send_message(target_chat, f"Failed to mirror message type: {ctype}")
-        except:
-            pass
+        logger.error(f"❌ Failed to send {ctype} to {target_chat}: {e}")
 
 # ───────────────────────────────
-# Mirror messages between added channels
+# Mirror messages between channels
 # ───────────────────────────────
-@bot.channel_post_handler(content_types=['text', 'photo', 'video', 'document', 'audio', 'voice', 'animation', 'sticker', 'video_note', 'poll', 'location', 'contact'])
+@bot.channel_post_handler(content_types=[
+    'text', 'photo', 'video', 'document', 'audio', 'voice', 
+    'animation', 'sticker', 'video_note', 'poll', 'location', 'contact'
+])
 def mirror_message(message):
-    source_chat = message.chat.id
-    if source_chat in channels:
-        print(f"🔄 Mirroring {message.content_type} from {source_chat} to {len(channels)-1} channels")
-        for target_chat in channels:
-            if target_chat != source_chat:
-                send_to_channel(target_chat, message)
+    try:
+        source_chat = message.chat.id
+        if source_chat in channels:
+            logger.info(f"🔄 Mirroring {message.content_type} from {source_chat} to {len(channels)-1} channels")
+            for target_chat in channels:
+                if target_chat != source_chat:
+                    send_to_channel(target_chat, message)
+    except Exception as e:
+        logger.error(f"❌ Error in mirror_message: {e}")
 
 # ───────────────────────────────
 # Handle media groups (albums)
 # ───────────────────────────────
 @bot.channel_post_handler(content_types=['media_group'])
 def handle_media_group(messages):
-    print(f"🖼️ Media group detected with {len(messages)} items")
-    for message in messages:
-        mirror_message(message)
+    try:
+        logger.info(f"🖼️ Media group detected with {len(messages)} items")
+        for message in messages:
+            mirror_message(message)
+    except Exception as e:
+        logger.error(f"❌ Error in handle_media_group: {e}")
 
 # ───────────────────────────────
-# Start the bot
+# Bot polling with error handling
 # ───────────────────────────────
 def start_bot():
-    print(" Starting Telegram Mirror Bot...")
-    print(f"✅ Monitoring {len(channels)} channels")
-    bot.polling(none_stop=True, interval=1, timeout=60)
+    logger.info("🤖 Starting Telegram Bot...")
+    while True:
+        try:
+            bot.polling(none_stop=True, interval=1, timeout=60)
+        except Exception as e:
+            logger.error(f"❌ Bot polling error: {e}")
+            logger.info("🔄 Restarting bot in 10 seconds...")
+            time.sleep(10)
 
+# ───────────────────────────────
+# Flask server for health checks
+# ───────────────────────────────
 def start_flask():
     port = int(os.getenv("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
+    logger.info(f"🌐 Starting Flask server on port {port}")
+    app.run(host='0.0.0.0', port=port, debug=False)
 
+# ───────────────────────────────
+# Main execution
+# ───────────────────────────────
 if __name__ == "__main__":
-    print("🚀 Initializing Mirror Bot...")
+    logger.info("🚀 Initializing Telegram Mirror Bot on Railway...")
     
-    # Start Flask in a separate thread for health checks
+    # Start Flask in a separate thread
     flask_thread = threading.Thread(target=start_flask)
     flask_thread.daemon = True
     flask_thread.start()
     
+    # Give Flask a moment to start
+    time.sleep(2)
+    
     # Start the bot
     start_bot()
+
