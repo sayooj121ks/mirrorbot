@@ -1,81 +1,57 @@
-import os
+import telebot
 import time
 import logging
 import traceback
 from threading import Thread
 from flask import Flask
-import telebot
-from pymongo import MongoClient
-from pymongo.errors import ConnectionFailure
+import os
 
 # Enhanced logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
+    format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Flask app for health checks
+# Flask for health checks
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Bot is running", 200
+    return "Bot running", 200
 
 @app.route('/health')
 def health():
-    return {"status": "healthy", "timestamp": time.time()}, 200
+    return "OK", 200
 
 def start_flask():
     port = int(os.getenv("PORT", 10000))
-    logger.info(f"🌐 Starting Flask on port {port}")
     app.run(host='0.0.0.0', port=port, debug=False)
 
-# Initialize bot with retry logic
-def initialize_bot():
-    max_retries = 5
-    for attempt in range(max_retries):
+def run_bot():
+    """Run bot with crash recovery"""
+    restart_count = 0
+    max_restarts = 50  # Prevent infinite loops
+    
+    while restart_count < max_restarts:
         try:
-            logger.info(f"🔄 Initializing bot (attempt {attempt + 1})...")
+            restart_count += 1
+            logger.info(f"🔄 Starting bot (attempt {restart_count})...")
             
-            # MongoDB connection
+            # Your existing bot initialization
             MONGO_URI = os.getenv("MONGO_URI")
             TOKEN = os.getenv("BOT_TOKEN")
             
-            mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=10000)
-            mongo_client.admin.command('ping')
-            
+            # Initialize MongoDB and bot
+            from pymongo import MongoClient
+            mongo_client = MongoClient(MONGO_URI)
             db = mongo_client.mirror_bot
             collection = db.channels
-            
-            # Load channels
             channels = [doc["chat_id"] for doc in collection.find()]
-            logger.info(f"✅ Loaded {len(channels)} channels")
             
-            # Initialize bot
             bot = telebot.TeleBot(TOKEN)
-            logger.info("✅ Bot initialized successfully")
             
-            return bot, channels, collection, mongo_client
-            
-        except Exception as e:
-            logger.error(f"❌ Initialization failed (attempt {attempt + 1}): {e}")
-            if attempt < max_retries - 1:
-                time.sleep(10)
-            else:
-                raise e
-
-def run_bot_with_restart():
-    """Run bot with auto-restart on failure"""
-    while True:
-        try:
-            logger.info("🚀 Starting/Restarting bot...")
-            
-            # Initialize bot components
-            bot, channels, collection, mongo_client = initialize_bot()
-            
-            # Your existing bot handlers
+            # Your existing handlers
             @bot.channel_post_handler(commands=['add'])
             def add_channel(message):
                 chat_id = message.chat.id
@@ -97,45 +73,57 @@ def run_bot_with_restart():
                         bot.send_photo(target_chat, file_id, caption=caption)
                     elif ctype == 'video':
                         bot.send_video(target_chat, message.video.file_id, caption=caption)
-                    # Add other content types...
+                    # Add other types...
                 except Exception as e:
-                    logger.error(f"Failed to send to {target_chat}: {e}")
+                    logger.error(f"Send failed: {e}")
 
             @bot.channel_post_handler(content_types=['text', 'photo', 'video', 'document'])
             def mirror_message(message):
                 source_chat = message.chat.id
                 if source_chat in channels:
-                    logger.info(f"🔄 Mirroring from {source_chat}")
+                    logger.info(f"Mirroring from {source_chat}")
                     for target_chat in channels:
                         if target_chat != source_chat:
                             send_to_channel(target_chat, message)
 
-            # Start polling with timeout
-            logger.info("🤖 Starting bot polling...")
-            bot.polling(none_stop=True,timeout=60, long_polling_timeout=60,skip_pending=True )
+            # Start bot with crash protection
+            logger.info("🤖 Bot started successfully")
+            bot.polling(
+                none_stop=True,
+                timeout=60,
+                long_polling_timeout=60,
+                skip_pending=True
+            )
+            
         except Exception as e:
             logger.error(f"💥 Bot crashed: {e}")
             logger.error(traceback.format_exc())
-            logger.info("🔄 Restarting in 10 seconds...")
-            time.sleep(10)
+            
+            # Wait before restart
+            wait_time = min(restart_count * 10, 60)  # Max 60 seconds
+            logger.info(f"🕒 Restarting in {wait_time} seconds...")
+            time.sleep(wait_time)
+    
+    logger.error("❌ Max restarts reached. Bot stopped.")
 
-def periodic_heartbeat():
-    """Log heartbeat every 5 minutes to confirm bot is alive"""
+def heartbeat():
+    """Log heartbeat every 2 minutes"""
     while True:
-        logger.info("💓 Bot heartbeat - still running")
-        time.sleep(300)  # 5 minutes
+        logger.info("💓 Bot heartbeat - running")
+        time.sleep(120)  # 2 minutes
 
 if __name__ == "__main__":
-    logger.info("🎯 Starting Mirror Bot with auto-restart...")
+    logger.info("🚀 Starting mirror bot...")
     
-    # Start Flask in background
+    # Start Flask
     flask_thread = Thread(target=start_flask, daemon=True)
     flask_thread.start()
     
     # Start heartbeat
-    heartbeat_thread = Thread(target=periodic_heartbeat, daemon=True)
+    heartbeat_thread = Thread(target=heartbeat, daemon=True)
     heartbeat_thread.start()
     
-    # Start bot with auto-restart
-    run_bot_with_restart()
+    # Start bot with crash recovery
+    run_bot()
+
 
