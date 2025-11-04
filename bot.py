@@ -112,8 +112,7 @@ def run_bot_with_restart():
 
             # Start polling with timeout
             logger.info("🤖 Starting bot polling...")
-            bot.polling(none_stop=True, timeout=60, long_polling_timeout=60)
-            
+            bot.polling(none_stop=True,timeout=60, long_polling_timeout=60,skip_pending=True )
         except Exception as e:
             logger.error(f"💥 Bot crashed: {e}")
             logger.error(traceback.format_exc())
@@ -139,3 +138,4 @@ if __name__ == "__main__":
     
     # Start bot with auto-restart
     run_bot_with_restart()
+
