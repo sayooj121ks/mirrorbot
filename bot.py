@@ -4,10 +4,31 @@ from threading import Timer
 from pymongo import MongoClient
 import os
 import time
+from flask import Flask
+import threading
 
 # Configuration - using environment variables for security
 MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://sayoojsayoojks72_db_user:MXhCHQUIZeZk9aEH@cluster0.qocoeg0.mongodb.net/?appName=Cluster0")
 TOKEN = os.getenv("BOT_TOKEN", "8406369208:AAG5LVhuDoVKVSutRwaUwsVFiBcFK805kmQ")
+
+# Initialize Flask app for health checks
+app = Flask(__name__)
+
+@app.route('/')
+def health_check():
+    return {
+        "status": "online",
+        "bot": "running",
+        "channels": len(channels),
+        "timestamp": time.time()
+    }
+
+@app.route('/health')
+def health():
+    return "✅ Bot is healthy and running!"
+
+def run_flask():
+    app.run(host='0.0.0.0', port=8080)
 
 # Initialize MongoDB
 try:
@@ -316,7 +337,12 @@ def start_polling():
             time.sleep(10)
 
 if __name__ == "__main__":
+    # Start Flask server in a separate thread
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    
     print("🚀 Mirror Bot Starting...")
+    print("🌐 Health check available at port 8080")
     print("✅ MongoDB:", "Connected" if client else "Disconnected")
     print("✅ Bot Token:", "Loaded" if TOKEN else "Missing")
     print("✅ Channels:", len(channels))
