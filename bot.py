@@ -11,6 +11,9 @@ import threading
 MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://sayoojsayoojks72_db_user:MXhCHQUIZeZk9aEH@cluster0.qocoeg0.mongodb.net/?appName=Cluster0")
 TOKEN = os.getenv("BOT_TOKEN", "8406369208:AAG5LVhuDoVKVSutRwaUwsVFiBcFK805kmQ")
 
+# Define your 2 source channels that will mirror to others
+SOURCE_CHANNELS = [-1003076383407, -1002990438747]  # Replace with your actual channel IDs
+
 # Initialize Flask app for health checks
 app = Flask(__name__)
 
@@ -20,6 +23,7 @@ def health_check():
         "status": "online",
         "bot": "running",
         "channels": len(channels),
+        "source_channels": SOURCE_CHANNELS,
         "timestamp": time.time()
     }
 
@@ -57,7 +61,8 @@ def add_channel_to_db(chat_id, chat_title=None):
             channels_col.insert_one({
                 "chat_id": chat_id, 
                 "chat_title": chat_title or "Unknown",
-                "added_at": time.time()
+                "added_at": time.time(),
+                "is_source": chat_id in SOURCE_CHANNELS
             })
             return True
         return False
@@ -79,6 +84,7 @@ media_groups = defaultdict(list)
 media_group_timers = {}
 
 print(f"📊 Loaded {len(channels)} channels from database")
+print(f"🎯 Source channels: {SOURCE_CHANNELS}")
 
 # ───────────────────────────────
 # Bot Commands
@@ -92,8 +98,14 @@ def add_channel_command(message):
     if chat_id not in channels:
         if add_channel_to_db(chat_id, chat_title):
             channels.append(chat_id)
-            bot.send_message(chat_id, f"✅ Channel '{chat_title}' added!\nTotal channels: {len(channels)}")
-            print(f"✅ Added channel: {chat_id} ({chat_title})")
+            # Check if this is a source channel
+            if chat_id in SOURCE_CHANNELS:
+                status = " (Source Channel 🎯)"
+            else:
+                status = " (Destination Channel)"
+                
+            bot.send_message(chat_id, f"✅ Channel '{chat_title}' added!{status}\nTotal channels: {len(channels)}")
+            print(f"✅ Added channel: {chat_id} ({chat_title}){status}")
         else:
             bot.send_message(chat_id, "❌ Failed to add channel to database.")
     else:
@@ -125,7 +137,8 @@ def list_channels_command(message):
         for channel in all_channels:
             title = channel.get('chat_title', 'Unknown')
             chat_id = channel.get('chat_id', 'N/A')
-            response += f"• {title} (ID: {chat_id})\n"
+            is_source = "🎯 " if chat_id in SOURCE_CHANNELS else "📥 "
+            response += f"{is_source} {title} (ID: {chat_id})\n"
         
         bot.send_message(message.chat.id, response)
     except Exception as e:
@@ -135,8 +148,13 @@ def list_channels_command(message):
 @bot.channel_post_handler(commands=['stats'])
 def stats_command(message):
     total_channels = len(channels)
+    source_count = len([chat for chat in channels if chat in SOURCE_CHANNELS])
+    destination_count = total_channels - source_count
+    
     response = f"📈 **Bot Statistics:**\n\n"
     response += f"• Total Channels: {total_channels}\n"
+    response += f"• Source Channels: {source_count} 🎯\n"
+    response += f"• Destination Channels: {destination_count} 📥\n"
     response += f"• Database: Connected ✅\n"
     response += f"• Bot: Running ✅"
     
@@ -153,10 +171,12 @@ def help_command(message):
 `/stats` - Show bot statistics
 `/help` - Show this help message
 
-**How to use:**
-1. Add bot as admin to all channels
-2. Send `/add` in each channel
-3. Post messages - they'll mirror to all other channels
+**How it works:**
+- 🎯 **Source Channels**: Messages from these channels are mirrored to all destination channels
+- 📥 **Destination Channels**: Receive mirrored messages from source channels
+- Add bot as admin to all channels
+- Send `/add` in each channel
+- Only messages from source channels will be mirrored
 """
     bot.send_message(message.chat.id, help_text)
 
@@ -208,11 +228,11 @@ def process_media_group(media_group_id, source_chat):
         if media_group_id in media_group_timers:
             del media_group_timers[media_group_id]
         
-        # Mirror to other channels
-        if source_chat in channels:
-            for target_chat in channels:
-                if target_chat != source_chat:
-                    send_media_group_to_channel(target_chat, messages)
+        # Mirror to destination channels only (exclude source channels)
+        if source_chat in SOURCE_CHANNELS:
+            target_channels = [chat for chat in channels if chat not in SOURCE_CHANNELS]
+            for target_chat in target_channels:
+                send_media_group_to_channel(target_chat, messages)
 
 # ───────────────────────────────
 # Message Handling
@@ -288,8 +308,13 @@ def send_to_channel(target_chat, message):
 ])
 def mirror_message(message):
     source_chat = message.chat.id
-    if source_chat not in channels:
+    
+    # Only mirror if message comes from one of the source channels
+    if source_chat not in SOURCE_CHANNELS:
         return
+    
+    # Only mirror to channels that are in the database AND not source channels
+    target_channels = [chat for chat in channels if chat not in SOURCE_CHANNELS]
     
     media_group_id = getattr(message, 'media_group_id', None)
     
@@ -309,10 +334,9 @@ def mirror_message(message):
         
     else:
         # Handle single message
-        print(f"🔄 Mirroring {message.content_type} from {source_chat} to {len(channels)-1} channels")
-        for target_chat in channels:
-            if target_chat != source_chat:
-                send_to_channel(target_chat, message)
+        print(f"🎯 Mirroring {message.content_type} from source channel {source_chat} to {len(target_channels)} destination channels")
+        for target_chat in target_channels:
+            send_to_channel(target_chat, message)
 
 # ───────────────────────────────
 # Error Handling & Startup
@@ -330,6 +354,8 @@ def start_polling():
         try:
             print("🟢 Starting bot polling...")
             print(f"📊 Tracking {len(channels)} channels")
+            print(f"🎯 Source channels: {len([c for c in channels if c in SOURCE_CHANNELS])}")
+            print(f"📥 Destination channels: {len([c for c in channels if c not in SOURCE_CHANNELS])}")
             bot.polling(none_stop=True, interval=1, timeout=60)
         except Exception as e:
             print(f"🔴 Bot crashed: {e}")
@@ -347,6 +373,7 @@ if __name__ == "__main__":
     print("✅ Bot Token:", "Loaded" if TOKEN else "Missing")
     print("✅ Channels:", len(channels))
     start_polling()
+
 
 
 
