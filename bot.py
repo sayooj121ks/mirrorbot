@@ -31,9 +31,9 @@ def health_check():
 def health():
     return "✅ Bot is healthy and running!"
 
-32  def run_flask():
-33      port = int(os.environ.get("PORT", 8080))
-34      app.run(host='0.0.0.0', port=port)
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
 
 
 # Initialize MongoDB
@@ -375,6 +375,7 @@ if __name__ == "__main__":
     print("✅ Bot Token:", "Loaded" if TOKEN else "Missing")
     print("✅ Channels:", len(channels))
     start_polling()
+
 
 
 
